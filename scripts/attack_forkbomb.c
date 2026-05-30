@@ -1,0 +1,89 @@
+/*
+ * attack_forkbomb.c — Anomaly Simulation: Resource Exhaustion (Fork Bomb)
+ *
+ * SAFE simulation: forks at a high rate but limits total children
+ * so the system is NOT actually crashed. Purpose: trigger FORK BOMB
+ * detection alerts in the Sentinel dashboard.
+ *
+ * Build:  gcc -o attack_forkbomb attack_forkbomb.c
+ * Run:    ./attack_forkbomb [burst_count] [delay_us]
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <time.h>
+
+#define DEFAULT_BURST   30      // forks to execute
+#define DEFAULT_DELAY   20000   // microseconds between forks (20ms)
+#define MAX_CHILDREN    50      // hard safety cap
+#define ATTACH_WINDOW   30      // seconds to keep parent alive for observer
+
+static int children_alive = 0;
+
+// Reap any finished children
+static void reap_children(void) {
+    int status;
+    while (waitpid(-1, &status, WNOHANG) > 0)
+        children_alive--;
+}
+
+int main(int argc, char *argv[]) {
+    int burst = (argc > 1) ? atoi(argv[1]) : DEFAULT_BURST;
+    int delay = (argc > 2) ? atoi(argv[2]) : DEFAULT_DELAY;
+
+    if (burst > MAX_CHILDREN) burst = MAX_CHILDREN;
+
+    printf("[ATTACK] Fork Bomb Simulation starting\n");
+    printf("[ATTACK] This process PID: %d\n", getpid());
+    printf("[ATTACK] Waiting %d seconds for observer to attach...\n\n", ATTACH_WINDOW);
+    sleep(ATTACH_WINDOW); // allow observer to attach before burst
+
+    printf("[ATTACK] Starting fork burst: %d children with %d µs delay\n", burst, delay);
+
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    for (int i = 0; i < burst; i++) {
+        reap_children();
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("[ATTACK] fork failed");
+            break;
+        }
+
+        if (pid == 0) {
+            // Child exits almost immediately for faster burst
+            usleep(2000);  // 2ms
+            exit(0);
+        }
+
+        children_alive++;
+        printf("[ATTACK] Spawned child #%d (PID %d)  alive=%d\n",
+               i+1, pid, children_alive);
+
+        usleep(delay);  // short pause between forks
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed = (now.tv_sec - start.tv_sec) +
+                     (now.tv_nsec - start.tv_nsec) / 1e9;
+    double rate = burst / elapsed;
+
+    printf("\n[ATTACK] Fork burst complete: %d forks in %.2fs (%.1f forks/sec)\n",
+           burst, elapsed, rate);
+
+    printf("[ATTACK] Waiting for all children to exit...\n");
+
+    // Reap all remaining children quickly
+    while (children_alive > 0) {
+        reap_children();
+        usleep(1000); // 1ms sleep for fast reaping
+    }
+
+    printf("[ATTACK] Done. All children reaped.\n");
+    return 0;
+}
